@@ -1,0 +1,511 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd">
+    <http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="4388904b-76ee-4cc4-ae01-643ebf123f01">
+        <http:listener-connection host="0.0.0.0" port="8081" />
+		<http:listener-interceptors >
+			<http:cors-interceptor >
+				<http:origins >
+					<http:origin url="http://localhost:5173" accessControlMaxAge="3600" >
+						<http:allowed-methods >
+							<http:method methodName="GET" />
+							<http:method methodName="POST" />
+							<http:method methodName="OPTIONS" />
+						</http:allowed-methods>
+						<http:allowed-headers >
+							<http:header headerName="Content-Type" />
+							<http:header headerName="Accept" />
+						</http:allowed-headers>
+					</http:origin>
+				</http:origins>
+			</http:cors-interceptor>
+		</http:listener-interceptors>
+    </http:listener-config>
+    <apikit:config outboundHeadersMapName="outboundHeadersMapName" httpStatusVarName="httpStatus" doc:name="Router" doc:id="be6f7f91-7193-4089-bbc2-1f12070dcecd" name="apiConfig" api="api.raml" />
+    <db:config name="Database_Config" doc:name="Database Config" doc:id="64f1fb4a-aa5c-4911-a66e-3358de40364f" >
+		<db:my-sql-connection host="${db.host}" port="${db.port}" user="${db.user}" password="${secure::db.password}" database="${db.name}" />
+	</db:config>
+	<http:request-config name="HTTP_Request_configuration" doc:name="HTTP Request configuration" doc:id="85a5dd39-f28f-452b-89ef-4a142fa38db1">
+		<http:request-connection host="${inventory.host}" port="${inventory.port}" />
+	</http:request-config>
+	<secure-properties:config name="securePropertiesConfig" doc:name="Secure Properties Config" doc:id="b4d5501d-f428-4257-8746-f93905dae7d9" file="secure.properties" key="${encryption.key}" />
+	<configuration-properties doc:name="Configuration properties" doc:id="96fa249f-b21f-4ccf-8a2d-3fc57d039395" file="application.properties" />
+
+	<!-- ============================================================ -->
+	<!-- Main APIkit Router Flow                                       -->
+	<!-- ============================================================ -->
+	<flow name="order-integration-hubFlow" doc:id="16e204e2-70bb-4f0b-947f-4587d16b1567">
+        <http:listener doc:name="Listener" doc:id="3adc3bb6-cc47-4e80-a5db-c813d48643f4" config-ref="HTTP_Listener_config" path="/api/v1/*" >
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+		</http:listener>
+        <apikit:router doc:name="APIkit Router" doc:id="896a800f-51b5-417e-ace4-603d4e81d1eb" config-ref="apiConfig" />
+        <logger level="INFO" doc:name="Logger" doc:id="9eb750de-fca0-4aea-83f1-92d7afc078e0" message="Received order request" />
+    </flow>
+
+	<!-- ============================================================ -->
+	<!-- GET /orders — Retrieve all orders                             -->
+	<!-- ============================================================ -->
+    <flow name="get:\orders:apiConfig">
+		<db:select doc:name="Select All Orders" doc:id="73496e3f-e0fe-4b26-9998-7bdf5f5beb63" config-ref="Database_Config">
+			<db:sql ><![CDATA[SELECT
+    id,
+    customer_id,
+    total_amount,
+    status,
+    created_at
+FROM orders;]]></db:sql>
+		</db:select>
+		<ee:transform doc:name="Transform to JSON" doc:id="e5d73960-5949-4a40-b100-0d1f0c4d74e2" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+payload map (order) -> {
+    id: order.id,
+    customerId: order.customer_id,
+    totalAmount: order.total_amount,
+    status: order.status,
+    createdAt: order.created_at
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+    </flow>
+
+	<!-- ============================================================ -->
+	<!-- GET /orders/{id} — Retrieve one order with line items          -->
+	<!-- ============================================================ -->
+    <flow name="get:\orders\(id):apiConfig">
+		<!-- Save the URI param -->
+		<set-variable value="#[attributes.uriParams.id]" doc:name="Set orderId" variableName="orderId" />
+
+		<!-- Fetch the order -->
+		<db:select doc:name="Select Order by ID" config-ref="Database_Config">
+			<db:sql><![CDATA[SELECT id, customer_id, total_amount, status, created_at
+FROM orders
+WHERE id = :orderId]]></db:sql>
+			<db:input-parameters><![CDATA[#[{ orderId: vars.orderId }]]]></db:input-parameters>
+		</db:select>
+
+		<!-- Check if order exists -->
+		<choice doc:name="Order Exists?">
+			<when expression="#[sizeOf(payload) > 0]">
+				<!-- Store the order row -->
+				<set-variable value="#[payload[0]]" doc:name="Set orderRow" variableName="orderRow" />
+
+				<!-- Fetch the order items -->
+				<db:select doc:name="Select Order Items" config-ref="Database_Config">
+					<db:sql><![CDATA[SELECT oi.product_id, oi.quantity, oi.price, p.name as product_name
+FROM order_items oi
+LEFT JOIN products p ON oi.product_id = p.id
+WHERE oi.order_id = :orderId]]></db:sql>
+					<db:input-parameters><![CDATA[#[{ orderId: vars.orderId }]]]></db:input-parameters>
+				</db:select>
+
+				<!-- Build the full response -->
+				<ee:transform doc:name="Build Order Response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    id: vars.orderRow.id,
+    customerId: vars.orderRow.customer_id,
+    totalAmount: vars.orderRow.total_amount,
+    status: vars.orderRow.status,
+    createdAt: vars.orderRow.created_at,
+    items: payload map (item) -> {
+        productId: item.product_id,
+        productName: item.product_name,
+        quantity: item.quantity,
+        price: item.price
+    }
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</when>
+			<otherwise>
+				<set-variable value="#[404]" doc:name="Set 404" variableName="httpStatus" />
+				<ee:transform doc:name="Order Not Found Response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "ORDER_NOT_FOUND",
+    message: "Order with ID " ++ (vars.orderId as String) ++ " was not found."
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</otherwise>
+		</choice>
+    </flow>
+
+	<!-- ============================================================ -->
+	<!-- GET /products — Retrieve products with inventory availability -->
+	<!-- ============================================================ -->
+    <flow name="get:\products:apiConfig">
+		<db:select doc:name="Select All Products" doc:id="2546db19-a041-4289-beb3-28fb9fd0843a" config-ref="Database_Config">
+			<db:sql ><![CDATA[SELECT id, name, price, stock
+FROM products;]]></db:sql>
+		</db:select>
+		<logger level="INFO" doc:name="Logger" doc:id="4c9d6468-d127-4baa-a61d-9d2a34e384d9" message="Products retrieved from MySQL: #[payload]"/>
+		<set-variable value="#[[]]" doc:name="productsWithInventory" doc:id="f07a6f3a-df07-4768-8c44-4b8d24f5ac9e" variableName="productsWithInventory"/>
+		<foreach doc:name="For Each" doc:id="564fc1ca-14f6-43da-a82c-ac36079af0a0" >
+			<set-variable value="#[payload]" doc:name="product" doc:id="a04395c1-c1c9-4b8d-9a94-1f68ea0f73d4" variableName="product" />
+			<logger level="INFO" doc:name="Logger" doc:id="8df6a6a1-6adf-48b7-9a6e-49d5f389c9d1" message="Checking inventory for product: #[vars.product.id]"/>
+			<http:request method="GET" doc:name="Request" doc:id="b99edfa9-f5aa-47e3-abc1-2fa37bb5cbec" path='#["/inventory/" ++ (payload.id as String)]' config-ref="HTTP_Request_configuration" target="inventory"/>
+			<logger level="INFO" doc:name="Logger" doc:id="f2149b10-e9ff-4c0a-8e9f-08e2fc607108" message="Inventory response for product #[vars.product.id]: #[payload]"/>
+			<choice doc:name="Choice" doc:id="9d91c860-12f1-4e4a-b52d-eb9b567e44f6" >
+				<when expression="#[vars.inventory.availableQuantity &gt; 0]">
+					<ee:transform doc:name="Transform Message" doc:id="081d1717-2b8c-4eeb-9d87-b732749cc3ef">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    productId: vars.product.id,
+    productName: vars.product.name,
+    unitPrice: vars.product.price,
+    availableQuantity: vars.inventory.availableQuantity
+}]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+				</when>
+				<otherwise >
+					<raise-error doc:name="Raise error" doc:id="24669020-ecd6-49d2-9124-b5c7750b2aef" type="APP:INVENTORY_UNAVAILABLE" description="Product is currently out of stock"/>
+				</otherwise>
+			</choice>
+			<set-variable value="#[%dw 2.0&#10;output application/java&#10;---&#10;vars.productsWithInventory ++ [payload]]" doc:name="productsWithInventory" doc:id="e56d7b8e-18a1-43fb-a007-0d5535a30b5b" variableName="productsWithInventory" mimeType="application/java"/>
+		</foreach>
+		<ee:transform doc:name="Transform Message" doc:id="9cdcb3de-8f7e-4af0-affc-fde6a3ec90e9" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+vars.productsWithInventory]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler >
+			<on-error-continue enableNotifications="true" logException="true" doc:name="" doc:id="a3e67223-fe6b-4b6e-8654-e7f049df5b6b" type="APP:INVENTORY_UNAVAILABLE">
+				<set-variable value="#[409]" doc:name="httpStatus" doc:id="753af455-1460-4744-8f7f-1b38c87e74ad" variableName="httpStatus"/>
+				<ee:transform doc:name="Transform Message" doc:id="4f8fbc89-6b52-413d-a1a2-7ade7623402e" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "INVENTORY_UNAVAILABLE",
+    message: "Product is currently out of stock"
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+			<on-error-continue enableNotifications="true" logException="true" doc:name="1" doc:id="7498e130-1dcb-46da-9a50-7c6059ee9a15" type="HTTP:CONNECTIVITY" >
+				<set-variable value="#[503]" doc:name="httpStatus" doc:id="1f562019-f6f8-4d8e-b99e-74ef1fdfb74b" variableName="httpStatus" />
+				<ee:transform doc:name="Transform Message" doc:id="ace998be-cc8f-4409-88ab-989f35e5a74e" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "INVENTORY_SERVICE_UNAVAILABLE",
+    message: "Inventory service is currently unavailable"
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+    </flow>
+
+	<!-- ============================================================ -->
+	<!-- POST /orders — Full validation, enrichment, and persistence   -->
+	<!-- ============================================================ -->
+    <flow name="post:\orders:application\json:apiConfig">
+
+		<!-- ======================================================== -->
+		<!-- STEP 1: Save the raw request payload                     -->
+		<!-- ======================================================== -->
+		<set-variable value="#[payload]" doc:name="Save Original Request" variableName="originalRequest" />
+		<logger level="INFO" doc:name="Log Order Request" message="POST /orders request received: #[payload]" />
+
+		<!-- ======================================================== -->
+		<!-- STEP 2: Validate the request structure (Step 2.1)        -->
+		<!-- ======================================================== -->
+		<ee:transform doc:name="Validate Request Structure">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var order = vars.originalRequest
+---
+(order.customerId is Number)
+and (order.customerId > 0)
+and (floor(order.customerId) == order.customerId)
+and (order.items is Array)
+and (!isEmpty(order.items))
+and (
+    sizeOf(
+        order.items filter ((item) ->
+            not (
+                (item.productId is Number)
+                and (item.productId > 0)
+                and (floor(item.productId) == item.productId)
+                and (item.quantity is Number)
+                and (item.quantity > 0)
+                and (floor(item.quantity) == item.quantity)
+            )
+        )
+    ) == 0
+)]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+
+		<choice doc:name="Is Request Valid?">
+			<when expression="#[payload == true]">
+				<logger level="INFO" doc:name="Validation Passed" message="Request validation passed" />
+			</when>
+			<otherwise>
+				<raise-error doc:name="Raise INVALID_ORDER" type="APP:INVALID_ORDER" description="The order request is invalid." />
+			</otherwise>
+		</choice>
+
+		<!-- ======================================================== -->
+		<!-- STEP 3: Verify customer exists in MySQL (Step 3.1)       -->
+		<!-- ======================================================== -->
+		<db:select doc:name="Verify Customer Exists" config-ref="Database_Config">
+			<db:sql><![CDATA[SELECT id FROM customers WHERE id = :customerId]]></db:sql>
+			<db:input-parameters><![CDATA[#[{ customerId: vars.originalRequest.customerId }]]]></db:input-parameters>
+		</db:select>
+
+		<choice doc:name="Customer Exists?">
+			<when expression="#[sizeOf(payload) > 0]">
+				<logger level="INFO" doc:name="Customer Found" message="Customer #[vars.originalRequest.customerId] verified" />
+			</when>
+			<otherwise>
+				<raise-error doc:name="Raise CUSTOMER_NOT_FOUND" type="APP:CUSTOMER_NOT_FOUND" description="Customer not found." />
+			</otherwise>
+		</choice>
+
+		<!-- ======================================================== -->
+		<!-- STEP 4: Retrieve product prices and check inventory       -->
+		<!--         (Steps 3.2 and 3.3)                              -->
+		<!-- ======================================================== -->
+		<set-variable value="#[[]]" doc:name="Init enrichedItems" variableName="enrichedItems" />
+
+		<!-- Iterate over each requested item -->
+		<foreach doc:name="For Each Item" collection="#[vars.originalRequest.items]">
+			<set-variable value="#[payload]" doc:name="Save Current Item" variableName="currentItem" />
+
+			<!-- 3.2: Retrieve the product price from MySQL -->
+			<db:select doc:name="Lookup Product Price" config-ref="Database_Config">
+				<db:sql><![CDATA[SELECT id, name, price FROM products WHERE id = :productId]]></db:sql>
+				<db:input-parameters><![CDATA[#[{ productId: vars.currentItem.productId }]]]></db:input-parameters>
+			</db:select>
+
+			<!-- Check if product exists -->
+			<choice doc:name="Product Exists?">
+				<when expression="#[sizeOf(payload) > 0]">
+					<set-variable value="#[payload[0]]" doc:name="Save Product Row" variableName="productRow" />
+				</when>
+				<otherwise>
+					<raise-error doc:name="Raise PRODUCT_NOT_FOUND" type="APP:PRODUCT_NOT_FOUND" description="#['Product with ID ' ++ (vars.currentItem.productId as String) ++ ' not found.']" />
+				</otherwise>
+			</choice>
+
+			<!-- 3.3: Check inventory via Spring Boot API -->
+			<http:request method="GET" doc:name="Check Inventory" config-ref="HTTP_Request_configuration" path="#['/inventory/' ++ (vars.currentItem.productId as String)]" target="inventoryResponse" />
+
+			<!-- Verify sufficient stock -->
+			<choice doc:name="Sufficient Stock?">
+				<when expression="#[vars.inventoryResponse.availableQuantity &gt;= vars.currentItem.quantity]">
+					<logger level="INFO" doc:name="Stock OK" message="Product #[vars.currentItem.productId]: requested #[vars.currentItem.quantity], available #[vars.inventoryResponse.availableQuantity]" />
+				</when>
+				<otherwise>
+					<raise-error doc:name="Raise INSUFFICIENT_STOCK" type="APP:INSUFFICIENT_STOCK" description="#['Insufficient stock for product ' ++ (vars.currentItem.productId as String) ++ '. Requested: ' ++ (vars.currentItem.quantity as String) ++ ', Available: ' ++ (vars.inventoryResponse.availableQuantity as String)]" />
+				</otherwise>
+			</choice>
+
+			<!-- Build the enriched item with server-side price -->
+			<ee:transform doc:name="Build Enriched Item">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+    productId: vars.currentItem.productId,
+    quantity: vars.currentItem.quantity,
+    price: vars.productRow.price,
+    lineTotal: vars.productRow.price * vars.currentItem.quantity
+}]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+
+			<!-- Append to enrichedItems -->
+			<set-variable value="#[%dw 2.0&#10;output application/java&#10;---&#10;vars.enrichedItems ++ [payload]]" doc:name="Append Enriched Item" variableName="enrichedItems" mimeType="application/java" />
+
+		</foreach>
+
+		<!-- ======================================================== -->
+		<!-- STEP 5: Calculate the total amount (Step 4.1)             -->
+		<!-- ======================================================== -->
+		<ee:transform doc:name="Calculate Total Amount">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+vars.enrichedItems reduce ((item, total = 0) ->
+  total + (item.price * item.quantity)
+)]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<set-variable value="#[payload]" doc:name="Save totalAmount" variableName="totalAmount" />
+
+		<!-- ======================================================== -->
+		<!-- STEP 6: Insert the order row (Step 4.2)                  -->
+		<!-- ======================================================== -->
+		<db:insert doc:name="Insert Order" config-ref="Database_Config" autoGenerateKeys="true">
+			<db:sql><![CDATA[INSERT INTO orders (customer_id, total_amount, status)
+VALUES (:customerId, :totalAmount, 'CREATED')]]></db:sql>
+			<db:input-parameters><![CDATA[#[{
+    customerId: vars.originalRequest.customerId,
+    totalAmount: vars.totalAmount
+}]]]></db:input-parameters>
+			<db:auto-generated-keys-column-names >
+				<db:auto-generated-keys-column-name value="id" />
+			</db:auto-generated-keys-column-names>
+		</db:insert>
+
+		<!-- Extract the generated order ID -->
+		<set-variable value="#[payload.generatedKeys.GENERATED_KEY]" doc:name="Save generatedOrderId" variableName="generatedOrderId" />
+		<logger level="INFO" doc:name="Log Order Created" message="Order created with ID: #[vars.generatedOrderId]" />
+
+		<!-- ======================================================== -->
+		<!-- STEP 7: Insert each order item row (Step 4.3)            -->
+		<!-- ======================================================== -->
+		<foreach doc:name="Insert Order Items" collection="#[vars.enrichedItems]">
+			<db:insert doc:name="Insert Order Item" config-ref="Database_Config">
+				<db:sql><![CDATA[INSERT INTO order_items (order_id, product_id, quantity, price)
+VALUES (:orderId, :productId, :quantity, :price)]]></db:sql>
+				<db:input-parameters><![CDATA[#[{
+    orderId: vars.generatedOrderId,
+    productId: payload.productId,
+    quantity: payload.quantity,
+    price: payload.price
+}]]]></db:input-parameters>
+			</db:insert>
+		</foreach>
+
+		<!-- ======================================================== -->
+		<!-- STEP 8: Return 201 Created confirmation (Step 4.4)       -->
+		<!-- ======================================================== -->
+		<set-variable value="#[201]" doc:name="Set HTTP 201" variableName="httpStatus" />
+		<ee:transform doc:name="Build Success Response">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: true,
+    orderId: vars.generatedOrderId,
+    status: "CREATED",
+    totalAmount: vars.totalAmount
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+
+		<!-- ======================================================== -->
+		<!-- Error Handlers for POST /orders                          -->
+		<!-- ======================================================== -->
+		<error-handler>
+			<!-- 400 Bad Request — Invalid order structure -->
+			<on-error-continue enableNotifications="true" logException="true" type="APP:INVALID_ORDER">
+				<set-variable value="#[400]" doc:name="Set 400" variableName="httpStatus" />
+				<ee:transform doc:name="Invalid Order Response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "INVALID_ORDER",
+    message: "The order request is invalid."
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+
+			<!-- 404 Not Found — Customer does not exist -->
+			<on-error-continue enableNotifications="true" logException="true" type="APP:CUSTOMER_NOT_FOUND">
+				<set-variable value="#[404]" doc:name="Set 404" variableName="httpStatus" />
+				<ee:transform doc:name="Customer Not Found Response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "CUSTOMER_NOT_FOUND",
+    message: "The specified customer does not exist."
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+
+			<!-- 404 Not Found — Product does not exist -->
+			<on-error-continue enableNotifications="true" logException="true" type="APP:PRODUCT_NOT_FOUND">
+				<set-variable value="#[404]" doc:name="Set 404" variableName="httpStatus" />
+				<ee:transform doc:name="Product Not Found Response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "PRODUCT_NOT_FOUND",
+    message: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+
+			<!-- 409 Conflict — Insufficient inventory -->
+			<on-error-continue enableNotifications="true" logException="true" type="APP:INSUFFICIENT_STOCK">
+				<set-variable value="#[409]" doc:name="Set 409" variableName="httpStatus" />
+				<ee:transform doc:name="Insufficient Stock Response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "INSUFFICIENT_STOCK",
+    message: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+
+			<!-- 503 Service Unavailable — Inventory service down -->
+			<on-error-continue enableNotifications="true" logException="true" type="HTTP:CONNECTIVITY">
+				<set-variable value="#[503]" doc:name="Set 503" variableName="httpStatus" />
+				<ee:transform doc:name="Inventory Service Unavailable Response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "INVENTORY_SERVICE_UNAVAILABLE",
+    message: "Inventory service is currently unavailable. Please try again later."
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+
+    </flow>
+</mule>
