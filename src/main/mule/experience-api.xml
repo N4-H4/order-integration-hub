@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd">
+
+	<!-- ============================================================ -->
+	<!-- Experience Layer: HTTP Listener & APIkit Router                -->
+	<!-- ============================================================ -->
+
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="4388904b-76ee-4cc4-ae01-643ebf123f01">
+        <http:listener-connection host="0.0.0.0" port="8081" />
+		<http:listener-interceptors >
+			<http:cors-interceptor >
+				<http:origins >
+					<http:origin url="http://localhost:5173" accessControlMaxAge="3600" >
+						<http:allowed-methods >
+							<http:method methodName="GET" />
+							<http:method methodName="POST" />
+							<http:method methodName="OPTIONS" />
+						</http:allowed-methods>
+						<http:allowed-headers >
+							<http:header headerName="Content-Type" />
+							<http:header headerName="Accept" />
+						</http:allowed-headers>
+					</http:origin>
+				</http:origins>
+			</http:cors-interceptor>
+		</http:listener-interceptors>
+    </http:listener-config>
+    <apikit:config outboundHeadersMapName="outboundHeadersMapName" httpStatusVarName="httpStatus" doc:name="Router" doc:id="be6f7f91-7193-4089-bbc2-1f12070dcecd" name="apiConfig" api="api.raml" />
+
+	<!-- ============================================================ -->
+	<!-- Main APIkit Router Flow                                       -->
+	<!-- ============================================================ -->
+	<flow name="order-integration-hubFlow" doc:id="16e204e2-70bb-4f0b-947f-4587d16b1567">
+        <http:listener doc:name="Listener" doc:id="3adc3bb6-cc47-4e80-a5db-c813d48643f4" config-ref="HTTP_Listener_config" path="/api/v1/*" >
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+		</http:listener>
+        <apikit:router doc:name="APIkit Router" doc:id="896a800f-51b5-417e-ace4-603d4e81d1eb" config-ref="apiConfig" />
+        <logger level="INFO" doc:name="Logger" doc:id="9eb750de-fca0-4aea-83f1-92d7afc078e0" message="Received order request" />
+    </flow>
+</mule>
